@@ -1,0 +1,270 @@
+{
+  "name": "Conciliación de Planillas",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Conciliación de Planillas",
+        "formDescription": "Subí las 3 planillas Excel: Statement, Reporte de Cajero y Reporte de Ingresos.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Statement",
+              "fieldType": "file",
+              "fieldName": "Statement",
+              "multipleFiles": false,
+              "acceptFileTypes": ".xlsx,.xls",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Reporte de Cajero",
+              "fieldType": "file",
+              "fieldName": "Reporte_de_Cajero",
+              "multipleFiles": false,
+              "acceptFileTypes": ".xlsx,.xls",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Reporte de Ingresos",
+              "fieldType": "file",
+              "fieldName": "Reporte_de_Ingresos",
+              "multipleFiles": false,
+              "acceptFileTypes": ".xlsx,.xls",
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {
+          "path": "conciliacion"
+        }
+      },
+      "id": "ddff53c1-696d-40d7-90c9-474dbaf603aa",
+      "name": "Subir Planillas",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        192
+      ],
+      "webhookId": "928e6069-ab07-4490-9d58-d0e10a73d230"
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "Statement",
+        "options": {
+          "headerRow": false,
+          "includeEmptyCells": true
+        }
+      },
+      "id": "993f61a2-19fe-43d8-869c-540044e69340",
+      "name": "Extract Statement",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "Reporte_de_Cajero",
+        "options": {
+          "headerRow": false,
+          "includeEmptyCells": true
+        }
+      },
+      "id": "48f71895-6bc2-4a70-8486-3b44157a76ad",
+      "name": "Extract Cajero",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "Reporte_de_Ingresos",
+        "options": {
+          "headerRow": false,
+          "includeEmptyCells": true
+        }
+      },
+      "id": "75b55b72-764e-40ae-b2fb-03a77917ec7d",
+      "name": "Extract Ingresos",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "id": "f3d6889e-2b82-4197-b211-47142f21f646",
+      "name": "Esperar 3 Planillas",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        448,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// =====================================================================\n//  CONCILIACIÓN STATEMENT vs (CAJERO Movimientos + CAJERO Depósitos + INGRESOS)\n//  Regla de oro: FECHA primero (obligatoria), luego MONTO, luego TARJETA/cod.aut.\n// =====================================================================\nvar ST = { fechaDep:0, fechaTrx:1, tarjeta:6, operacion:8, tipoTarjeta:9, tarjetaNum:10, codAut:12, checkout:17, total:23 };\nvar CJ  = { folioInd:1, fecha:2, abonos:10, referencia:13 };\nvar DEP = { folio:0, fecha:2, total:6, notas:8 };\nvar IN  = { ticket:1, fecha:2, propina:15, total:17, fp:18, pago:19, ref:23 };\nvar TOL_INGRESO = 1.0; // el statement a veces redondea a peso (937.3 -> 938)\n\n// -------- Helpers --------\nfunction toCells(json){\n  if (Array.isArray(json)) return json;\n  if (json && Array.isArray(json.row)) return json.row;\n  var keys = Object.keys(json || {});\n  var allNum = keys.length > 0 && keys.every(function(k){ return /^\\d+$/.test(k); });\n  if (allNum) { keys.sort(function(a,b){ return Number(a)-Number(b); }); }\n  return keys.map(function(k){ return json[k]; });\n}\nfunction norm(v){ return String(v === null || v === undefined ? '' : v).toLowerCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').trim(); }\nfunction normHard(v){ return norm(v).replace(/[^a-z0-9]/g,''); }\nfunction digits(v){ return String(v === null || v === undefined ? '' : v).replace(/\\D/g,''); }\nfunction last4(v){ var d = digits(v); return d.length >= 4 ? d.slice(-4) : d; }\nfunction parseAmount(v){\n  if (v === null || v === undefined || v === '') return NaN;\n  if (typeof v === 'number') return Math.round(v*100)/100;\n  var s = String(v).trim().replace(/[^0-9.,-]/g,''); if (s === '') return NaN;\n  var lc = s.lastIndexOf(','), ld = s.lastIndexOf('.');\n  if (lc > ld) { s = s.replace(/\\./g,'').replace(',', '.'); } else { s = s.replace(/,/g,''); }\n  var n = parseFloat(s); return isNaN(n) ? NaN : Math.round(n*100)/100;\n}\nfunction amountEq(a,b){ if (isNaN(a)||isNaN(b)) return false; return Math.abs(a-b) < 0.01; }\nfunction pad(x){ x = String(x); return x.length < 2 ? '0'+x : x; }\nfunction normDate(v){\n  if (v === null || v === undefined) return '';\n  if (typeof v === 'number') { var d0 = new Date(Date.UTC(1899,11,30) + v*86400000); return '' + d0.getUTCFullYear() + pad(d0.getUTCMonth()+1) + pad(d0.getUTCDate()); }\n  var s = String(v).trim(); if (!s) return '';\n  var m = s.match(/(\\d{1,4})[\\/.\\-](\\d{1,2})[\\/.\\-](\\d{1,4})/);\n  if (m){ var a=m[1],b=m[2],c=m[3],y,mo,d; if (a.length===4){y=a;mo=b;d=c;}else{d=a;mo=b;y=c;} if (y.length===2) y='20'+y; return y+pad(mo)+pad(d); }\n  var t = Date.parse(s); if (!isNaN(t)){ var dt=new Date(t); return ''+dt.getFullYear()+pad(dt.getMonth()+1)+pad(dt.getDate()); }\n  return norm(s);\n}\nfunction alnum(v){ return norm(v).replace(/[^a-z0-9]/g,''); }\n// cod.aut robusto: núcleo de DÍGITOS (para 01018D con sufijo de red) + ALFANUMÉRICO (para letras: LDFBXT, IK526C).\nfunction codMatch(stCod, refText){\n  var sd = digits(stCod), sa = alnum(stCod);\n  var rd = digits(refText), ra = alnum(refText);\n  if (sd.length >= 5){\n    if (rd.indexOf(sd) !== -1) return true;\n    var sd2 = sd.replace(/^0+/,''); if (sd2.length >= 5 && rd.indexOf(sd2) !== -1) return true;\n  }\n  if (sa.length >= 5 && ra.indexOf(sa) !== -1) return true;\n  return false;\n}\nfunction safeRows(name){ try { return $(name).all().map(function(i){ return toCells(i.json); }); } catch(e){ return []; } }\nfunction findHeader(rows, markers){\n  for (var r = 0; r < rows.length; r++){ var row = rows[r]; if (!row) continue;\n    for (var c = 0; c < row.length; c++){ var cell = normHard(row[c]);\n      for (var mi = 0; mi < markers.length; mi++){ if (cell === normHard(markers[mi])) return r; } } }\n  return -1;\n}\nfunction findRowLike(rows, markers, startAt){\n  for (var r = (startAt||0); r < rows.length; r++){ var row = rows[r]; if (!row) continue;\n    var c0 = normHard(row[0]);\n    for (var mi = 0; mi < markers.length; mi++){ if (c0 === normHard(markers[mi])) return r; } }\n  return -1;\n}\n\n// -------- Cargar hojas --------\nvar stAll = safeRows('Extract Statement');\nvar cjAll = safeRows('Extract Cajero');\nvar inAll = safeRows('Extract Ingresos');\n\n// -------- Statement: filas de datos --------\nvar stHdr = findHeader(stAll, ['cod. aut.', 'cod aut', 'codaut']);\nvar stData = (stHdr >= 0 ? stAll.slice(stHdr+1) : stAll.slice(1)).filter(function(row){\n  return row && (norm(row[ST.fechaTrx]) !== '' || norm(row[ST.total]) !== '' || norm(row[ST.codAut]) !== '');\n});\nstData.sort(function(a,b){\n  var ka = normDate(a[ST.fechaDep]), kb = normDate(b[ST.fechaDep]);\n  if (ka < kb) return -1; if (ka > kb) return 1;\n  var la = normDate(a[ST.fechaTrx]), lb = normDate(b[ST.fechaTrx]);\n  if (la < lb) return -1; if (la > lb) return 1;\n  return 0;\n});\n\n// -------- Cajero MOVIMIENTOS: por Folio Ind (cobros con fecha por cobro) --------\nvar cjHdr = findHeader(cjAll, ['folio ind']);\nvar cjEnd = findRowLike(cjAll, ['total','depositos','deposito','sub total caja','retiros de caja'], cjHdr>=0?cjHdr+1:0);\nvar cjSlice = cjAll.slice(cjHdr>=0?cjHdr+1:0, cjEnd>=0?cjEnd:cjAll.length);\nvar cjData = cjSlice.filter(function(row){ return row && norm(row[CJ.folioInd]) !== '' && norm(row[CJ.abonos]) !== ''; });\nvar cajeroFolios = {};\nfor (var ci = 0; ci < cjData.length; ci++){\n  var crow = cjData[ci];\n  var folio = String(crow[CJ.folioInd]);\n  var abono = parseAmount(crow[CJ.abonos]);\n  var cfecha = normDate(crow[CJ.fecha]);\n  if (!cajeroFolios[folio]) cajeroFolios[folio] = { folio: folio, fechas: {}, sum: 0, charges: [] };\n  cajeroFolios[folio].charges.push({ abono: abono, refText: crow[CJ.referencia], fecha: cfecha });\n  if (!isNaN(abono)) cajeroFolios[folio].sum = Math.round((cajeroFolios[folio].sum + abono) * 100) / 100;\n  if (cfecha) cajeroFolios[folio].fechas[cfecha] = true;\n}\n\n// -------- Cajero DEPOSITOS (segunda tabla) --------\nvar depositos = [];\nvar depHdr = findRowLike(cjAll, ['depositos','deposito']);\nif (depHdr >= 0){\n  var colHdr = findHeader(cjAll.slice(depHdr, depHdr+4), ['folio']);\n  var depStart = depHdr + (colHdr >= 0 ? colHdr + 1 : 2);\n  for (var dr = depStart; dr < cjAll.length; dr++){\n    var drow = cjAll[dr]; if (!drow) continue;\n    var dfolio = norm(drow[DEP.folio]);\n    if (dfolio === '') continue;\n    if (dfolio === 'total' || dfolio === 'retiros de caja' || dfolio === 'codigo' || dfolio === 'sub total caja') break;\n    if (!/^ind\\d+/.test(dfolio) && !/^mtr\\d+/.test(dfolio)) continue;\n    var dtotal = parseAmount(drow[DEP.total]);\n    if (isNaN(dtotal)) continue;\n    depositos.push({ folio: String(drow[DEP.folio]), fecha: normDate(drow[DEP.fecha]), total: dtotal, refText: drow[DEP.notas] });\n  }\n}\n\n// -------- Ingresos: por TICKET (padre + sub-filas de pago/PROTC) --------\nvar inHdr = findHeader(inAll, ['ticket']);\nvar inData = inHdr >= 0 ? inAll.slice(inHdr+1) : inAll;\nvar ingresoTickets = {}; var curTicket = '';\nfor (var i = 0; i < inData.length; i++){\n  var row = inData[i]; if (!row) continue;\n  if (norm(row[IN.ticket]) !== ''){\n    curTicket = String(row[IN.ticket]);\n    if (!ingresoTickets[curTicket]) ingresoTickets[curTicket] = { ticket: curTicket, fecha: normDate(row[IN.fecha]), total: parseAmount(row[IN.total]), pays: [] };\n  }\n  var fp = norm(row[IN.fp]); var pago = parseAmount(row[IN.pago]); var ref4 = last4(row[IN.ref]);\n  if (fp !== '' && !isNaN(pago) && curTicket !== '' && ingresoTickets[curTicket]){\n    ingresoTickets[curTicket].pays.push({ fp: fp, pago: pago, ref4: ref4 });\n  }\n}\n\n// -------- Matchers (todos exigen FECHA) --------\nfunction folioHasDate(g, dateKey){ return dateKey !== '' && g.fechas[dateKey] === true; }\n\n// Cajero fuerte: FECHA + cod.aut (llave única). El monto es refuerzo, NO requisito\n// (liquidación internacional puede diferir del abono del Cajero).\nfunction matchCajeroStrong(codAutRaw, total, dateKey){\n  if (dateKey === '' || alnum(codAutRaw).length < 5) return null;\n  for (var f in cajeroFolios){ var g = cajeroFolios[f];\n    for (var c = 0; c < g.charges.length; c++){ var ch = g.charges[c];\n      if (ch.fecha === dateKey && codMatch(codAutRaw, ch.refText)){\n        var mismo = !isNaN(total) && amountEq(total, ch.abono);\n        var diff = (!isNaN(total) && !isNaN(ch.abono)) ? Math.round((total - ch.abono)*100)/100 : NaN;\n        return { folio: g.folio, montoFuente: ch.abono, diff: diff,\n          detalle: 'Cajero: cobro individual (fecha + cod.aut' + (mismo ? ' + monto' : '; monto difiere -liquidación-') + ').' };\n      } } }\n  return null;\n}\nfunction matchDepositoStrong(codAutRaw, total, dateKey){\n  if (dateKey === '' || alnum(codAutRaw).length < 5) return null;\n  for (var i = 0; i < depositos.length; i++){ var d = depositos[i];\n    if (d.fecha === dateKey && codMatch(codAutRaw, d.refText)){\n      var mismo = !isNaN(total) && amountEq(total, d.total);\n      var diff = (!isNaN(total) && !isNaN(d.total)) ? Math.round((total - d.total)*100)/100 : NaN;\n      return { folio: d.folio, montoFuente: d.total, diff: diff,\n        detalle: 'Cajero/Depósitos: fecha + cod.aut' + (mismo ? ' + monto' : '; monto difiere -liquidación-') + '.' };\n    } }\n  return null;\n}\nfunction matchIngreso(card4, dateKey, total){\n  if (card4 === '' || isNaN(total) || dateKey === '') return null;\n  var best = null, bestDiff = Infinity;\n  for (var t in ingresoTickets){ var tk = ingresoTickets[t];\n    if (tk.fecha !== dateKey) continue;\n    var cardPays = [], protcSum = 0;\n    for (var pi = 0; pi < tk.pays.length; pi++){ var pp = tk.pays[pi];\n      if (pp.ref4 !== '' && pp.ref4 === card4) cardPays.push(pp);\n      else if (pp.ref4 === '' && !isNaN(pp.pago)) protcSum += pp.pago; }\n    if (cardPays.length === 0) continue;\n    protcSum = Math.round(protcSum*100)/100;\n    var sumCard = 0; for (var cp = 0; cp < cardPays.length; cp++){ sumCard += cardPays[cp].pago; } sumCard = Math.round(sumCard*100)/100;\n    var cands = [];\n    for (var cp2 = 0; cp2 < cardPays.length; cp2++){ cands.push(cardPays[cp2].pago); cands.push(Math.round((cardPays[cp2].pago + protcSum)*100)/100); }\n    cands.push(sumCard); cands.push(Math.round((sumCard + protcSum)*100)/100);\n    if (!isNaN(tk.total)) cands.push(tk.total);\n    for (var cd = 0; cd < cands.length; cd++){ var diff = Math.abs(total - cands[cd]); if (diff < bestDiff){ bestDiff = diff; best = tk.ticket; } }\n  }\n  if (best !== null && bestDiff <= TOL_INGRESO)\n    return { ticket: best, detalle: 'Ingresos: ticket (fecha + tarjeta ' + card4 + ' + monto' + (bestDiff >= 0.01 ? ', dif '+bestDiff.toFixed(2) : '') + ').' };\n  return null;\n}\nfunction matchCajeroByAmountDate(total, dateKey){\n  if (isNaN(total) || dateKey === '') return null;\n  for (var f in cajeroFolios){ var g = cajeroFolios[f];\n    if (!folioHasDate(g, dateKey) || !amountEq(total, g.sum)) continue;\n    var extra = g.charges.length > 1 ? ' (' + g.charges.length + ' cobros sumados)' : '';\n    return { folio: g.folio, detalle: 'Cajero: suma de cobros del Folio Ind por fecha + monto' + extra + '.' }; }\n  return null;\n}\nfunction matchDepositoByAmountDate(total, dateKey){\n  if (isNaN(total) || dateKey === '') return null;\n  for (var i = 0; i < depositos.length; i++){ var d = depositos[i];\n    if (d.fecha === dateKey && amountEq(total, d.total)) return { folio: d.folio, detalle: 'Cajero/Depósitos: fecha + monto.' }; }\n  return null;\n}\nfunction matchCombinado(card4, dateKey, total){\n  if (isNaN(total) || dateKey === '' || card4 === '') return null;\n  for (var t in ingresoTickets){ var tk = ingresoTickets[t];\n    if (tk.fecha !== dateKey) continue;\n    var protcSum = 0, cardPays = [];\n    for (var pi = 0; pi < tk.pays.length; pi++){ var pp = tk.pays[pi];\n      if (pp.ref4 !== '' && pp.ref4 === card4) cardPays.push(pp);\n      else if (pp.ref4 === '' && !isNaN(pp.pago)) protcSum += pp.pago; }\n    if (cardPays.length === 0) continue;\n    protcSum = Math.round(protcSum*100)/100;\n    var sumCard = 0; for (var cp = 0; cp < cardPays.length; cp++){ sumCard += cardPays[cp].pago; } sumCard = Math.round(sumCard*100)/100;\n    var ticketAmts = [sumCard, Math.round((sumCard + protcSum)*100)/100];\n    if (!isNaN(tk.total)) ticketAmts.push(tk.total);\n    for (var f in cajeroFolios){ var g = cajeroFolios[f];\n      if (!folioHasDate(g, dateKey)) continue;\n      for (var ta = 0; ta < ticketAmts.length; ta++){\n        var combo = Math.round((g.sum + ticketAmts[ta])*100)/100;\n        if (amountEq(total, combo))\n          return { folio: g.folio, ticket: tk.ticket, detalle: 'Combinado: Folio Ind (' + g.sum + ') + Ticket tarjeta ' + card4 + ' (' + ticketAmts[ta] + ') = ' + total + ', misma fecha.' }; } } }\n  return null;\n}\n\n// -------- Conciliación (Statement es la base) --------\nvar out = [];\nfor (var s = 0; s < stData.length; s++){\n  var row = stData[s];\n  var codAutRaw = row[ST.codAut];\n  var card4 = last4(row[ST.tarjetaNum]);\n  var total = parseAmount(row[ST.total]);\n  var dateKey = normDate(row[ST.fechaTrx]);\n  var checkout = norm(row[ST.checkout]);\n  var isCheckout = (checkout === 'si' || checkout === 'sí' || checkout === 'yes' || checkout === 'true' || checkout === '1');\n\n  var cliente = '', origen = '', estado = '', detalle = '', difMonto = '', m = null;\n  function difComentario(mm){\n    if (mm && !isNaN(mm.diff) && Math.abs(mm.diff) >= 0.01)\n      return 'Statement ' + total + ' vs fuente ' + mm.montoFuente + ' = diferencia ' + mm.diff;\n    return '';\n  }\n\n  if (isCheckout && (isNaN(total) || total < 1)){\n    cliente = 'checkout'; origen = 'Checkout'; estado = 'No conciliar';\n    detalle = 'Fila marcada como checkout (pre-autorización); excluida de la conciliación.';\n  } else if ((m = matchCajeroStrong(codAutRaw, total, dateKey))){\n    cliente = m.folio; origen = 'Reporte de Cajero (Folio Ind)'; estado = 'Conciliado Parcial'; detalle = m.detalle; difMonto = difComentario(m);\n  } else if ((m = matchDepositoStrong(codAutRaw, total, dateKey))){\n    cliente = m.folio; origen = 'Reporte de Cajero (Depósitos)'; estado = 'Conciliado Parcial'; detalle = m.detalle; difMonto = difComentario(m);\n  } else if ((m = matchIngreso(card4, dateKey, total))){\n    cliente = m.ticket; origen = 'Reporte de Ingresos (Ticket)'; estado = 'Conciliado Parcial'; detalle = m.detalle;\n  } else if ((m = matchCajeroByAmountDate(total, dateKey))){\n    cliente = m.folio; origen = 'Reporte de Cajero (Folio Ind)'; estado = 'Conciliado Parcial'; detalle = m.detalle;\n  } else if ((m = matchDepositoByAmountDate(total, dateKey))){\n    cliente = m.folio; origen = 'Reporte de Cajero (Depósitos)'; estado = 'Conciliado Parcial'; detalle = m.detalle;\n  } else if ((m = matchCombinado(card4, dateKey, total))){\n    cliente = m.folio + ' + ' + m.ticket; origen = 'Cajero (Folio) + Ingresos (Ticket) sumados'; estado = 'Conciliado Total'; detalle = m.detalle;\n  } else {\n    estado = 'Discrepancia'; detalle = 'No se encontró coincidencia en Cajero ni en Ingresos.';\n  }\n\n  out.push({ json: {\n    'Fecha Deposito': row[ST.fechaDep] !== undefined ? row[ST.fechaDep] : '',\n    'Fecha Transaccion': row[ST.fechaTrx] !== undefined ? row[ST.fechaTrx] : '',\n    'Tarjeta': row[ST.tarjeta] !== undefined ? row[ST.tarjeta] : '',\n    'Operacion': row[ST.operacion] !== undefined ? row[ST.operacion] : '',\n    'Tipo Tarjeta': row[ST.tipoTarjeta] !== undefined ? row[ST.tipoTarjeta] : '',\n    'Tarjeta Numero': row[ST.tarjetaNum] !== undefined ? row[ST.tarjetaNum] : '',\n    'Cod. Aut.': row[ST.codAut] !== undefined ? row[ST.codAut] : '',\n    'Checkout': row[ST.checkout] !== undefined ? row[ST.checkout] : '',\n    'Total': row[ST.total] !== undefined ? row[ST.total] : '',\n    'cliente': cliente,\n    'dif_monto': difMonto,\n    'cliente_origen': origen,\n    'estado': estado,\n    'detalle_conciliacion': detalle,\n  }});\n}\n\nif (out.length === 0){\n  out.push({ json: { aviso: 'No se detectaron filas de datos en el Statement. Revisá la posición de columnas / encabezados.' } });\n}\nreturn out;\n"
+      },
+      "id": "30eed3c3-f7b8-4cd6-8831-af00e513b177",
+      "name": "Conciliar Planillas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "Conciliacion.xlsx",
+          "headerRow": true,
+          "sheetName": "Conciliacion"
+        }
+      },
+      "id": "4d413cbc-aa3c-424c-a1af-ad280667c4d6",
+      "name": "Generar Excel",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        896,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "returnBinary",
+        "completionTitle": "Conciliación lista",
+        "completionMessage": "La conciliación se completó. Descargá el archivo Conciliacion.xlsx.",
+        "options": {}
+      },
+      "id": "382ed0ec-b401-40db-bdac-d7814d78e977",
+      "name": "Descargar Resultado",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.5,
+      "position": [
+        1120,
+        192
+      ],
+      "webhookId": "7afe3544-4a3f-491a-ac0d-5c27a6a5d747"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Subir Planillas": {
+      "main": [
+        [
+          {
+            "node": "Extract Statement",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract Cajero",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract Ingresos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Statement": {
+      "main": [
+        [
+          {
+            "node": "Esperar 3 Planillas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Cajero": {
+      "main": [
+        [
+          {
+            "node": "Esperar 3 Planillas",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Extract Ingresos": {
+      "main": [
+        [
+          {
+            "node": "Esperar 3 Planillas",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Esperar 3 Planillas": {
+      "main": [
+        [
+          {
+            "node": "Conciliar Planillas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conciliar Planillas": {
+      "main": [
+        [
+          {
+            "node": "Generar Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generar Excel": {
+      "main": [
+        [
+          {
+            "node": "Descargar Resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a4e367eb-77ca-4558-860b-117ac0a1b3c3",
+  "meta": {
+    "instanceId": "c34325b9ec2a6466f786cc57736600c17b80a78e197b54224edbd322ca43a4c8"
+  },
+  "nodeGroups": [],
+  "id": "pLsPAfflSgSIMaJj",
+  "tags": []
+}
